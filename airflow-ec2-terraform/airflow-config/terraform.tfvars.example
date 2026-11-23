@@ -1,0 +1,33 @@
+# Copy to terraform.tfvars. Values come from the infra stack:
+#   terraform -chdir=../infra output -raw airflow_url
+#   export TF_VAR_airflow_password="$(terraform -chdir=../infra output -raw airflow_admin_password)"
+
+airflow_url      = "https://airflow-dev.example.com"
+airflow_username = "admin"
+
+connections = {
+  aws_default = {
+    conn_type = "aws"
+    extra     = "{\"region_name\": \"us-east-1\"}"
+  }
+  my_postgres = {
+    conn_type = "postgres"
+    host      = "mydb.example.internal"
+    port      = 5432
+    schema    = "analytics"
+    login     = "airflow_reader"
+    password  = "CHANGE-ME"
+  }
+}
+
+airflow_variables = {
+  environment = "dev"
+  data_bucket = "my-dev-data-bucket"
+}
+
+pools = {
+  postgres_pool = {
+    slots       = 4
+    description = "Limit concurrent Postgres tasks"
+  }
+}

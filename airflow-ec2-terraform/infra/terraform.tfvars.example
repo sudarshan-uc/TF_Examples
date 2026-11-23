@@ -1,0 +1,34 @@
+# Copy to terraform.tfvars and replace the placeholder values.
+
+aws_region = "us-east-1"
+name       = "airflow-dev"
+
+tags = {
+  Environment = "dev"
+  Owner       = "data-platform"
+}
+
+# Existing VPC and subnets
+vpc_id             = "vpc-0123456789abcdef0"
+private_subnet_ids = ["subnet-0aaaaaaaaaaaaaaaa", "subnet-0bbbbbbbbbbbbbbbb"]
+alb_subnet_ids     = ["subnet-0aaaaaaaaaaaaaaaa", "subnet-0bbbbbbbbbbbbbbbb"]
+
+# Who can open the Airflow UI
+allowed_cidrs = ["10.0.0.0/8"]
+
+# Optional: HTTPS and a friendly URL
+# certificate_arn = "arn:aws:acm:us-east-1:111111111111:certificate/xxxx"
+# route53_zone_id = "Z0123456789ABCDEFGHIJ"
+# hostname        = "airflow-dev.example.com"
+
+# Sizing
+instance_type     = "m7i.xlarge"
+db_instance_class = "db.t4g.medium"
+
+# Your Astro project repo. Leave empty to start with a starter project.
+# dag_repo_url    = "https://github.com/your-org/your-airflow-repo.git"
+# dag_repo_branch = "main"
+
+# Optional: re-run git pull + build + migrate + restart on the VM via Systems Manager.
+# Change the value to run it again.
+# deploy_version = "1"

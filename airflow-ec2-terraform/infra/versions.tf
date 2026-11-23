@@ -1,0 +1,30 @@
+terraform {
+  required_version = ">= 1.5.0"
+
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = ">= 5.40, < 7.0"
+    }
+    random = {
+      source  = "hashicorp/random"
+      version = ">= 3.6"
+    }
+  }
+
+  # Recommended: keep state in S3. Uncomment and fill in.
+  # backend "s3" {
+  #   bucket       = "CHANGE-ME-terraform-state"
+  #   key          = "airflow/dev/terraform.tfstate"
+  #   region       = "us-east-1"
+  #   use_lockfile = true
+  # }
+}
+
+provider "aws" {
+  region = var.aws_region
+
+  default_tags {
+    tags = var.tags
+  }
+}
