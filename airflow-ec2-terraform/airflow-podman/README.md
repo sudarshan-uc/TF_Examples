@@ -38,48 +38,20 @@ Every unit restarts on failure, starts at boot, and has a health check. A failin
 | Each VM, network | Pull access to the Runtime image registry (quay.io, astrocrpublic.azurecr.io, or your mirror). With `project_dir`, the build also needs PyPI (or your index) for `requirements.txt` and the Chainguard apk repo for `packages.txt` |
 | Database | Postgres 14–18 reachable from every Airflow VM, with an empty database for Airflow. The bundled Postgres container is for dev/test only |
 
-### What has been tested
+### Tested on
 
-On 2026-11-24, against a single Fedora CoreOS VM (podman 5.8.4, SELinux enforcing, arm64) with `quay.io/astronomer/astro-runtime:3.4-1-chainguard` (Airflow 3.4.0):
+Astro Runtime `3.4-1-chainguard` (Airflow 3.4.0), podman 5.x, SELinux enforcing:
 
-| Scenario | Result |
-|---|---|
-| Fresh apply: build, bundled Postgres, migrate, 4 components | Passed. A smoke-test DAG ran on LocalExecutor, and its task log was readable through the API. |
-| Re-apply with no changes | `plan` reports no changes |
-| DAG-only change | Only `base` re-ran. DAGs synced, no rebuild, no restarts. |
-| `airflow_env` change | Env rewritten, migrate re-ran, components restarted, new value live |
-| Dockerfile change | New image built, migrate, rollout to the new tag, old image removed |
-| Container killed | systemd restarted it (`NRestarts=1`) |
-| Switch to CeleryExecutor (bundled Redis, worker on the same host) | Passed. The DAG ran on the Celery worker. |
-| Switch back to LocalExecutor | Worker, Redis unit and Redis secret removed |
-| Unreachable `sql_alchemy_conn` | Failed in about 60s with a clear DB error instead of hanging. The next good apply recovered with data intact. |
-| `terraform destroy` with purge | No containers, units, secrets, images, directories or systemd entries left |
+- **One VM:** install, re-apply with no changes, DAG-only change, `airflow_env` change, Dockerfile rebuild and rollout, recovery after a container is killed, switching between LocalExecutor and CeleryExecutor, unreachable database (fails in about a minute with a clear error), destroy.
+- **Three VMs, CeleryExecutor:** podman installed by the module, workers on different queues, task logs read across hosts, cold restart of the database host, moving components between hosts, removing a host, destroy.
 
-Also on 2026-11-24, against three AlmaLinux 10 VMs (kernel 6.12, SELinux enforcing, arm64, no podman preinstalled) on one private network. The layout was: af-a with api-server, dag-processor, triggerer, Postgres and Redis; af-b with scheduler and worker; af-c with a worker on the `default` and `heavy` queues.
+Not yet covered: Amazon Linux 2023, RHEL itself (tested on its rebuild, AlmaLinux 10), x86_64, prebuilt `image` mode, `registry_auth`, `build_netrc`, a bastion host, external Postgres or Redis.
 
-| Scenario | Result |
-|---|---|
-| Fresh apply with `install_podman = true` and `host_key` set | podman installed with dnf, image built on all three hosts, migrate ran on af-b (the scheduler host), all units healthy |
-| CeleryExecutor across hosts | Passed. Default-queue tasks ran on af-b and af-c; the `heavy` task ran only on af-c. |
-| Task logs across hosts | The API server on af-a served task logs from af-b and af-c (port 8793) |
-| Cold restart of af-a (DB, Redis, API server) | Every unit came back at boot and was healthy. The scheduler and worker on af-b recovered without a restart. |
-| Moving dag-processor to af-b and triggerer to af-c | Units started on the new hosts and were removed from af-a. Unchanged units were not restarted. |
-| Removing af-c from `hosts` | af-c torn down (units, containers, built images, `/etc/airflow`, `/opt/airflow`). The other hosts kept running and a DAG succeeded. |
-| `terraform destroy` | Nothing left but the pulled upstream images |
+### Things to know
 
-**Not tested yet:**
-- Amazon Linux 2023 and RHEL itself (AlmaLinux 10 is the RHEL 10 rebuild).
-- x86_64.
-- `image` mode, `registry_auth`, `build_netrc`.
-- A bastion host.
-- An external Postgres or Redis.
-
-### Problems found during testing
-
-- **`host_key` must be the host's ECDSA key** (`/etc/ssh/ssh_host_ecdsa_key.pub`, or `ssh-keyscan -t ecdsa`). Terraform's SSH client negotiates ECDSA when the server has an ECDSA key, so an ed25519 `host_key` fails with `knownhosts: key mismatch`. The same error appears when a VM is rebuilt and its host keys change, which is the check working as intended.
-- **VM hostnames don't resolve inside containers on some images.** On AlmaLinux the hostname resolves only through the host's nss-myhostname, which the Runtime image doesn't have. In multi-VM mode the scheduler then crashed with `socket.gaierror`. Every Airflow unit now maps the VM hostname to `private_ip` (`AddHost=%H:<ip>`), so `hostname_callable` always returns the address other hosts use.
-- **AlmaLinux 9 on Apple M5 hosts is not usable for local testing.** The 5.14 kernel reports SVE2 that the CPU doesn't have, so `apk` in the Chainguard build dies with SIGILL. This doesn't affect EC2 (Graviton 3/4 have SVE; x86 is unaffected), and AlmaLinux 10 works.
-- **Builds use docker format.** `podman build` now runs with `--format docker`. The default OCI format drops the Runtime image's `SHELL` (bash with pipefail), so the build steps ran under `/bin/sh`.
+- **Use the host's ECDSA key for `host_key`** (`/etc/ssh/ssh_host_ecdsa_key.pub`, or `ssh-keyscan -t ecdsa <host>`). Terraform's SSH client negotiates ECDSA, so an ed25519 key fails with `knownhosts: key mismatch`. The same error after a VM rebuild means its host keys changed; update `host_key`.
+- **Hostnames don't need DNS.** Each Airflow container maps the VM hostname to its `private_ip`, so task logs and heartbeats resolve across hosts even when the hostname doesn't resolve inside containers.
+- **Builds use docker format** (`podman build --format docker`), so the Runtime image's build steps run under bash with `pipefail`, as they do with Docker.
 
 ## Usage
 
@@ -145,7 +117,7 @@ Choose one of these:
 
 - Generated secrets (Fernet key, JWT secret, API secret key, user passwords, bundled DB/Redis passwords) are in Terraform state. Use an encrypted backend with restricted access (see `versions.tf`).
 - On the VM, secrets live in root-only files under `/etc/airflow`, a podman secret (Redis), and the password file (container user, `0600`). The rendered apply scripts carry secrets and are deleted right after they run. Nothing goes through cloud-init user data.
-- Set `host_key` on every host so Terraform verifies the VM it connects to. Use the ECDSA host key (see "Problems found during testing").
+- Set `host_key` on every host so Terraform verifies the VM it connects to. Use the ECDSA host key (see "Things to know").
 - To reuse an existing database with encrypted connections, set `fernet_key` to its current key.
 - Auth is Airflow's SimpleAuthManager. FAB isn't in the Runtime image, so SSO/LDAP needs extra work.
 

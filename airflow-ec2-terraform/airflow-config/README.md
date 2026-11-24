@@ -114,19 +114,16 @@ If a newer Airflow version adds fields to its responses, every plan will show th
 - **Users and roles are not managed here.** With SimpleAuthManager they come from the Airflow install (`users` in `airflow-podman`).
 - **Object names go into URL paths.** Keep connection IDs, variable keys and pool names to letters, digits, `_`, `-` and `.`.
 
-## What has been tested
+## Tested on
 
-On 2026-11-24, with Terraform 1.15, restapi 2.0.1 and external 2.4.2, against Airflow 3.4.0 (Astro Runtime 3.4-1-chainguard) installed by `airflow-podman`.
+Terraform 1.15, restapi 2.0.1 and external 2.4.2, against Airflow 3.4.0 (Astro Runtime `3.4-1-chainguard`):
 
-| Scenario | Result |
-|---|---|
-| Create two connections (one with a password and a secret extra key), three variables (one JSON, one with a sensitive-looking key), one secret variable, one pool, and `default_pool` slots | Created; the next plan was a no-op |
-| Out-of-band changes: connection host, pool slots, `default_pool` slots, variable value, secret variable value; one connection and one variable deleted | All detected; apply reverted the changes and recreated the deleted objects; the next plan was a no-op |
-| Config changes: port changed, `schema` removed, password and secret extra rotated, variable renamed, pool slots changed, `default_pool_slots` removed | `schema` cleared to null; the new password and extra were confirmed in the Airflow database; rename was a delete and create; `default_pool` went back to 128 |
-| Objects created outside Terraform | Apply failed with 409; after `terraform import` (and an `import` block) the next apply changed them to match config |
-| `AIRFLOW_PASSWORD` unset, wrong password, Airflow unreachable | Plan stopped with a clear message from the token script |
-| `terraform destroy` | Every managed object removed, `default_pool` back to 128 |
-| restapi 3.0.0 | Rejected: out-of-band changes and deletions were not detected |
+- Creating connections (with and without secrets), plain, JSON and secret variables, pools and `default_pool` slots, followed by a clean plan.
+- Changes and deletions made outside Terraform: detected, reverted or recreated.
+- Config changes: a field removed, a password and secret `extra` rotated, a key renamed, `default_pool` released.
+- Adopting existing objects with `terraform import` and `import` blocks.
+- Missing or wrong credentials and an unreachable Airflow: the plan stops with a clear message.
+- `terraform destroy`.
 
 ## Files
 
