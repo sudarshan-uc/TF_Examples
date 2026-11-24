@@ -1,11 +1,14 @@
 output "connection_ids" {
-  value = keys(restapi_object.connection)
+  description = "Connections managed by this stack."
+  value       = keys(restapi_object.connection)
 }
 
 output "variable_keys" {
-  value = keys(restapi_object.variable)
+  description = "Variables managed by this stack (plain and secret)."
+  value       = concat(keys(restapi_object.variable), keys(restapi_object.secret_variable))
 }
 
 output "pool_names" {
-  value = keys(restapi_object.pool)
+  description = "Pools managed by this stack."
+  value       = concat(keys(restapi_object.pool), var.default_pool_slots == null ? [] : ["default_pool"])
 }

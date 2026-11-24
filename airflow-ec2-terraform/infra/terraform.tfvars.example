@@ -16,6 +16,10 @@ alb_subnet_ids     = ["subnet-0aaaaaaaaaaaaaaaa", "subnet-0bbbbbbbbbbbbbbbb"]
 # Who can open the Airflow UI
 allowed_cidrs = ["10.0.0.0/8"]
 
+# SSH for ../airflow-podman: an existing key pair, and where Terraform runs
+key_name          = "airflow-dev"
+ssh_allowed_cidrs = ["10.0.0.0/8"]
+
 # Optional: HTTPS and a friendly URL
 # certificate_arn = "arn:aws:acm:us-east-1:111111111111:certificate/xxxx"
 # route53_zone_id = "Z0123456789ABCDEFGHIJ"
@@ -24,11 +28,3 @@ allowed_cidrs = ["10.0.0.0/8"]
 # Sizing
 instance_type     = "m7i.xlarge"
 db_instance_class = "db.t4g.medium"
-
-# Your Astro project repo. Leave empty to start with a starter project.
-# dag_repo_url    = "https://github.com/your-org/your-airflow-repo.git"
-# dag_repo_branch = "main"
-
-# Optional: re-run git pull + build + migrate + restart on the VM via Systems Manager.
-# Change the value to run it again.
-# deploy_version = "1"
