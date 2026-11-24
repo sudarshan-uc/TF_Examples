@@ -1,17 +1,13 @@
 #!/bin/bash
-# Sets up Astro Runtime (Chainguard) on Podman. Rendered by Terraform and run
-# once when the instance is created. Log: /var/log/airflow-setup.log
+# First boot only: installs Podman and mounts EFS at /opt/airflow.
+# Airflow itself is installed and updated by ../airflow-podman over SSH, so
+# this script carries no secrets and no Airflow settings, and changing Airflow
+# never replaces the instance. Log: /var/log/airflow-setup.log
 set -euxo pipefail
 exec > >(tee -a /var/log/airflow-setup.log) 2>&1
 
-# ----------------------------------------------------------------------------
-# 1. Packages
-# ----------------------------------------------------------------------------
-dnf install -y podman git amazon-efs-utils
+dnf install -y podman amazon-efs-utils rsync
 
-# ----------------------------------------------------------------------------
-# 2. Mount EFS at /opt/airflow
-# ----------------------------------------------------------------------------
 mkdir -p /opt/airflow
 MOUNT_OPTS="_netdev,noresvport,tls"
 # When SELinux is on, label EFS so containers can use it.
@@ -27,130 +23,5 @@ for _ in $(seq 1 30); do
 done
 mountpoint -q /opt/airflow
 
-mkdir -p /opt/airflow/logs /opt/airflow/config
-
-# ----------------------------------------------------------------------------
-# 3. Airflow settings
-# ----------------------------------------------------------------------------
-mkdir -p /etc/airflow
-cat > /etc/airflow/airflow.env <<'EOF'
-AIRFLOW__CORE__EXECUTOR=LocalExecutor
-AIRFLOW__CORE__LOAD_EXAMPLES=False
-AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://airflow:${db_password}@${db_host}:5432/airflow
-AIRFLOW__CORE__FERNET_KEY=${fernet_key}
-AIRFLOW__API_AUTH__JWT_SECRET=${jwt_secret}
-AIRFLOW__API__SECRET_KEY=${api_secret_key}
-AIRFLOW__API__BASE_URL=${base_url}
-AIRFLOW__CORE__EXECUTION_API_SERVER_URL=http://localhost:8080/execution/
-AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_USERS=${admin_username}:admin
-AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_PASSWORDS_FILE=/usr/local/airflow/config/passwords.json
-EOF
-chmod 600 /etc/airflow/airflow.env
-
-cat > /opt/airflow/config/passwords.json <<'EOF'
-{"${admin_username}": "${admin_password}"}
-EOF
-chmod 600 /opt/airflow/config/passwords.json
-
-# ----------------------------------------------------------------------------
-# 4. Astro project: clone the repo, or create a starter project
-# ----------------------------------------------------------------------------
-if [ ! -d /opt/airflow/project ]; then
-%{ if dag_repo_url != "" ~}
-  git clone --branch "${dag_repo_branch}" "${dag_repo_url}" /opt/airflow/project
-%{ else ~}
-  mkdir -p /opt/airflow/project/dags
-  echo "FROM ${runtime_image}" > /opt/airflow/project/Dockerfile
-  touch /opt/airflow/project/requirements.txt /opt/airflow/project/packages.txt
-  cat > /opt/airflow/project/dags/hello_airflow.py <<'EOF'
-from datetime import datetime
-
-from airflow.sdk import dag, task
-
-
-@dag(schedule=None, start_date=datetime(2026, 1, 1), catchup=False, tags=["example"])
-def hello_airflow():
-    @task
-    def show_versions():
-        import platform
-
-        import airflow
-
-        print("Airflow", airflow.__version__, "| Python", platform.python_version())
-
-    show_versions()
-
-
-hello_airflow()
-EOF
-%{ endif ~}
-fi
-
-# ----------------------------------------------------------------------------
-# 5. Helper commands
-# ----------------------------------------------------------------------------
-
-# airflow-start: (re)starts the 4 Airflow containers.
-cat > /usr/local/bin/airflow-start <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-IMAGE=localhost/airflow-runtime:latest
-COMMON="--network host --restart always --env-file /etc/airflow/airflow.env
-  -v /opt/airflow/project/dags:/usr/local/airflow/dags:ro
-  -v /opt/airflow/logs:/usr/local/airflow/logs
-  -v /opt/airflow/config:/usr/local/airflow/config"
-
-for c in api-server scheduler dag-processor triggerer; do
-  podman rm -f "airflow-$c" >/dev/null 2>&1 || true
-  # shellcheck disable=SC2086
-  podman run -d --name "airflow-$c" $COMMON "$IMAGE" airflow "$c"
-done
-podman ps
-EOF
-
-# airflow-deploy: git pull, build image, migrate DB, restart containers.
-cat > /usr/local/bin/airflow-deploy <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-export HOME=/root
-# One deploy at a time (setup script and SSM Run Command may both call this).
-exec 9>/var/lock/airflow-deploy.lock
-flock 9
-IMAGE=localhost/airflow-runtime:latest
-cd /opt/airflow/project
-
-if [ -d .git ]; then
-  git pull
-fi
-
-podman build -t airflow-runtime .
-
-# The Chainguard image may not include `id`, so ask Python for the user ID.
-ASTRO_UID=$(podman run --rm --entrypoint python "$IMAGE" -c "import os; print(os.getuid())")
-chown -R "$ASTRO_UID" /opt/airflow/logs /opt/airflow/config
-
-for attempt in 1 2 3 4 5 6 7 8 9 10; do
-  podman run --rm --network host --env-file /etc/airflow/airflow.env "$IMAGE" airflow db migrate && break
-  echo "db migrate failed (attempt $attempt), retrying in 30s"
-  sleep 30
-done
-
-/usr/local/bin/airflow-start
-EOF
-
-chmod +x /usr/local/bin/airflow-start /usr/local/bin/airflow-deploy
-
-# ----------------------------------------------------------------------------
-# 6. Build, migrate, start, and restart containers automatically after reboot
-# ----------------------------------------------------------------------------
-mkdir -p /etc/systemd/system/podman-restart.service.d
-cat > /etc/systemd/system/podman-restart.service.d/efs.conf <<'EOF'
-[Unit]
-RequiresMountsFor=/opt/airflow
-EOF
-systemctl daemon-reload
-systemctl enable podman-restart.service
-
-/usr/local/bin/airflow-deploy
-
-echo "Airflow setup complete"
+podman --version
+echo "Host ready for airflow-podman"

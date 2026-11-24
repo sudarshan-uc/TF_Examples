@@ -1,33 +1,49 @@
-# Copy to terraform.tfvars. Values come from the infra stack:
-#   terraform -chdir=../infra output -raw airflow_url
-#   export TF_VAR_airflow_password="$(terraform -chdir=../infra output -raw airflow_admin_password)"
+# Copy to terraform.tfvars and edit. Keep secrets out of this file: pass
+# connection_secrets and secret_variables as TF_VAR_* environment variables or
+# from a secrets manager in CI (see README).
+#
+# Before plan/apply:
+#   export AIRFLOW_PASSWORD='<password of airflow_username>'
 
-airflow_url      = "https://airflow-dev.example.com"
+airflow_url      = "https://airflow.example.internal"
 airflow_username = "admin"
+# ca_file        = "/etc/pki/tls/certs/internal-ca.pem"
 
 connections = {
   aws_default = {
     conn_type = "aws"
     extra     = "{\"region_name\": \"us-east-1\"}"
   }
-  my_postgres = {
-    conn_type = "postgres"
-    host      = "mydb.example.internal"
-    port      = 5432
-    schema    = "analytics"
-    login     = "airflow_reader"
-    password  = "CHANGE-ME"
+  warehouse = {
+    conn_type   = "postgres"
+    description = "Analytics warehouse (read-only)"
+    host        = "warehouse.example.internal"
+    port        = 5432
+    schema      = "analytics"
+    login       = "airflow_reader"
+    extra       = "{\"sslmode\": \"require\"}"
   }
 }
+
+# export TF_VAR_connection_secrets='{"warehouse": {"password": "..."}}'
+# connection_secrets = {
+#   warehouse = { password = "..." }
+#   some_api  = { extra = "{\"api_token\": \"...\"}" }   # merged into connections.some_api.extra
+# }
 
 airflow_variables = {
-  environment = "dev"
-  data_bucket = "my-dev-data-bucket"
+  environment = "prod"
+  data_bucket = "s3://example-prod-data"
+  settings    = "{\"retries\": 2, \"owners\": [\"data-eng\"]}"
 }
 
+# export TF_VAR_secret_variables='{"partner_api_key": "..."}'
+
 pools = {
-  postgres_pool = {
+  warehouse_pool = {
     slots       = 4
-    description = "Limit concurrent Postgres tasks"
+    description = "Limit concurrent warehouse queries"
   }
 }
+
+# default_pool_slots = 64

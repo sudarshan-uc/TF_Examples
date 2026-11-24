@@ -1,5 +1,6 @@
-# Single EC2 instance running Astro Runtime (Chainguard) with Podman.
-# Shell access is through AWS Systems Manager Session Manager (no SSH key).
+# Single EC2 instance for Astro Runtime (Chainguard) on Podman. User data only
+# installs Podman and mounts EFS; ../airflow-podman installs Airflow over SSH.
+# Interactive shell access is also available through Session Manager.
 
 resource "aws_iam_role" "ec2" {
   name = "${var.name}-ec2"
@@ -41,19 +42,10 @@ resource "aws_instance" "airflow" {
     encrypted   = true
   }
 
+  key_name = var.key_name
+
   user_data_base64 = base64gzip(templatefile("${path.module}/user_data.sh.tftpl", {
-    efs_id          = aws_efs_file_system.airflow.id
-    db_host         = aws_db_instance.airflow.address
-    db_password     = random_password.db.result
-    fernet_key      = replace(replace(random_bytes.fernet.base64, "+", "-"), "/", "_")
-    jwt_secret      = random_password.jwt_secret.result
-    api_secret_key  = random_password.api_secret_key.result
-    admin_username  = var.airflow_admin_username
-    admin_password  = random_password.admin.result
-    base_url        = local.base_url
-    runtime_image   = var.runtime_image
-    dag_repo_url    = var.dag_repo_url
-    dag_repo_branch = var.dag_repo_branch
+    efs_id = aws_efs_file_system.airflow.id
   }))
   user_data_replace_on_change = true
 

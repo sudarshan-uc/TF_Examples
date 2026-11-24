@@ -76,6 +76,16 @@ variable "ami_id" {
   default     = null
 }
 
+variable "key_name" {
+  description = "EC2 key pair for SSH. ../airflow-podman connects with its private key."
+  type        = string
+}
+
+variable "ssh_allowed_cidrs" {
+  description = "CIDRs allowed to SSH to the instance: where Terraform runs for ../airflow-podman, or its bastion."
+  type        = list(string)
+}
+
 variable "root_volume_size_gb" {
   description = "Root disk size (holds the container images)."
   type        = number
@@ -106,36 +116,4 @@ variable "db_deletion_protection" {
   description = "Block deletion of the database. Set to false before terraform destroy."
   type        = bool
   default     = true
-}
-
-# ---------------------------------------------------------------- Airflow
-
-variable "runtime_image" {
-  description = "Astro Runtime image, used only when dag_repo_url is empty (starter project). With a repo, the repo's Dockerfile decides the image."
-  type        = string
-  default     = "quay.io/astronomer/astro-runtime:3.4-1-chainguard"
-}
-
-variable "dag_repo_url" {
-  description = "HTTPS URL of the Astro project repo (Dockerfile, requirements.txt, packages.txt, dags/). Leave empty to start with a starter project."
-  type        = string
-  default     = ""
-}
-
-variable "dag_repo_branch" {
-  description = "Branch to check out."
-  type        = string
-  default     = "main"
-}
-
-variable "airflow_admin_username" {
-  description = "Airflow UI username."
-  type        = string
-  default     = "admin"
-}
-
-variable "deploy_version" {
-  description = "Optional. Set to any value (e.g. \"1\") to run airflow-deploy on the VM through AWS Systems Manager; change it to run again. null = disabled."
-  type        = string
-  default     = null
 }

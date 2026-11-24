@@ -1,5 +1,6 @@
 # users -> ALB (80/443) -> EC2 (8080) -> RDS (5432)
 #                          EC2 -> EFS (2049)
+# Terraform runner (airflow-podman) -> EC2 (22)
 
 resource "aws_security_group" "alb" {
   name        = "${var.name}-alb"
@@ -43,7 +44,15 @@ resource "aws_security_group" "ec2" {
     security_groups = [aws_security_group.alb.id]
   }
 
-  # Outbound: container registry, PyPI, git, AWS APIs.
+  ingress {
+    description = "SSH from the Terraform runner (airflow-podman)"
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = var.ssh_allowed_cidrs
+  }
+
+  # Outbound: container registry, PyPI, AWS APIs.
   egress {
     from_port   = 0
     to_port     = 0

@@ -1,146 +1,91 @@
-# Terraform: Airflow dev environment on EC2 (Astro Runtime 3.4 Chainguard + Podman)
+# Terraform: Airflow on VMs (Astro Runtime 3.4 Chainguard + Podman)
 
-Two Terraform stacks, applied in order:
+Three Terraform stacks, applied in order. Each has its own state.
 
-| Folder | Providers | What it does |
+| Folder | Providers | What it does | Needed when |
+|---|---|---|---|
+| [`infra/`](infra/) | `hashicorp/aws`, `hashicorp/random` | EC2, EFS, PostgreSQL RDS, load balancer. User data only installs Podman and mounts EFS. | Only if you don't already have VMs, a database and a load balancer |
+| [`airflow-podman/`](airflow-podman/README.md) | `hashicorp/random` | Installs and runs Airflow on one or more VMs over SSH: image build, DAG sync, DB migration, every component as a systemd (quadlet) unit, upgrades, teardown | Always |
+| [`airflow-config/`](airflow-config/README.md) | `Mastercard/restapi`, `hashicorp/external` | Airflow connections, variables and pools through the REST API, with drift detection | Always |
+
+```
+infra (optional)            VMs, network, Postgres, load balancer
+   │  instance IP, sql_alchemy_conn, airflow_url
+   ▼
+airflow-podman              Airflow running, admin password in outputs
+   │  airflow_url, admin password
+   ▼
+airflow-config              connections, variables, pools
+```
+
+## Which tool configures what
+
+| Layer | Configured by | How changes reach it |
 |---|---|---|
-| `infra/` | `hashicorp/aws`, `hashicorp/random` | Creates EC2, EFS, PostgreSQL RDS and the load balancer. The EC2 setup script installs Podman, builds the Astro Runtime `3.4-1-chainguard` image and starts Airflow. Optionally re-runs the deploy on the VM through AWS Systems Manager. |
-| `airflow-config/` | `Mastercard/restapi`, `hashicorp/external` | Configures Airflow itself through its REST API: connections, variables and pools. |
-
-### Which tool configures what
-
-| Layer | Configured by | Notes |
-|---|---|---|
-| AWS resources | `aws` provider (`infra/`) | |
-| VM and Podman, first boot | EC2 user data (`infra/user_data.sh.tftpl`) | Runs once when the instance is created. |
-| VM and Podman, later changes | `aws_ssm_association` (`infra/ssm_deploy.tf`) | Re-runs `airflow-deploy` on the VM without replacing it. No network path from Terraform to the VM needed. |
-| Airflow connections, variables, pools | `restapi` provider (`airflow-config/`) | Calls `/api/v2/connections`, `/api/v2/variables`, `/api/v2/pools`. |
-| Airflow API token | `external` data source (`airflow-config/`) | Runs `scripts/get_airflow_token.py` to call `POST /auth/token`. |
-
-The `restapi` and `external` providers are not used to configure the VM or Podman:
-- `external` only offers a data source. It runs a script on the machine running Terraform at every plan, and has no create/update/destroy lifecycle, so it can't manage anything on the VM.
-- `restapi` could only reach Podman if the Podman API were exposed over the network from the VM, which grants root-level control of the host. Podman's API also doesn't map to simple create/read/update/delete objects (image builds, start/stop actions).
+| AWS resources | `infra/` (or your own Terraform) | `terraform apply` |
+| Podman on the VM | `infra/user_data.sh.tftpl` (first boot), or your VM image | Install Podman 4.6+ once; `airflow-podman` checks the version |
+| Airflow containers, image, DAGs, `airflow.cfg` settings | `airflow-podman/` over SSH | `terraform apply`: re-runs only the steps whose inputs changed, never replaces the VM |
+| Connections, variables, pools | `airflow-config/` | `terraform apply`: POST/PATCH/DELETE on `/api/v2` |
+| Airflow API token | `external` data source in `airflow-config/` | Fetched on every plan from `POST /auth/token` |
 
 ## Before you start
 
-- Terraform 1.5 or newer, AWS credentials for the target account, and `python3` on the machine running Terraform (for `airflow-config/`).
-- An existing VPC with at least 2 private subnets in different AZs.
-- The private subnets need outbound access to `quay.io` (Runtime image), PyPI, your Git server and AWS APIs (Systems Manager).
-- The machine running `airflow-config/` must be able to reach the Airflow URL (the load balancer is internal by default).
-- Optional: an ACM certificate (HTTPS) and a Route 53 hosted zone (friendly URL).
-- Optional: your Astro project repo:
-  ```
-  your-repo/
-  ├── Dockerfile          FROM quay.io/astronomer/astro-runtime:3.4-1-chainguard
-  ├── requirements.txt
-  ├── packages.txt        Chainguard (apk) package names
-  └── dags/
-  ```
+- Terraform 1.5+ and `python3` where Terraform runs.
+- SSH from where Terraform runs to every VM (port 22, directly or through a bastion), as a user with passwordless `sudo`.
+- VMs: Linux with systemd and Podman 4.6+ with quadlet. Outbound access to `quay.io` (or your registry mirror) and PyPI.
+- Postgres 14–18 with an empty `airflow` database.
+- An Astro project (`Dockerfile`, `requirements.txt`, `packages.txt`, `dags/`). `airflow-podman/examples/astro-project` is a minimal one.
 
-## Step 1: infrastructure (`infra/`)
-
-| File | What it creates |
-|---|---|
-| `versions.tf` | Provider versions, AWS provider, optional S3 backend |
-| `variables.tf` | All inputs |
-| `main.tf` | AMI lookup, generated passwords/keys |
-| `security_groups.tf` | Security groups for ALB, EC2, RDS, EFS |
-| `ec2.tf` | EC2 instance and IAM role (Session Manager access) |
-| `efs.tf` | EFS file system and mount targets (mounted at `/opt/airflow`) |
-| `rds.tf` | PostgreSQL RDS instance |
-| `alb.tf` | Load balancer, target group, listeners, optional DNS record |
-| `ssm_deploy.tf` | Optional redeploy on the VM through Systems Manager |
-| `outputs.tf` | URL, login, instance ID, endpoints |
-| `user_data.sh.tftpl` | First-boot script: mounts EFS, builds the image, migrates the DB, starts Airflow |
+## Step 1 (optional): AWS infrastructure (`infra/`)
 
 ```bash
 cd infra
-cp terraform.tfvars.example terraform.tfvars
-# edit: vpc_id, subnets, allowed_cidrs; optionally certificate_arn, hostname, dag_repo_url
-
-terraform init
-terraform plan
-terraform apply
+cp terraform.tfvars.example terraform.tfvars   # vpc_id, subnets, allowed_cidrs, key_name, ssh_allowed_cidrs
+terraform init && terraform apply
+terraform output -raw airflow_podman_tfvars    # paste into ../airflow-podman/terraform.tfvars
+export TF_VAR_sql_alchemy_conn="$(terraform output -raw sql_alchemy_conn)"
 ```
 
-`apply` takes about 10–15 minutes (RDS is the slowest part). The instance needs about 5–10 more minutes to build the image and start Airflow.
+## Step 2: Airflow (`airflow-podman/`)
 
 ```bash
-terraform output airflow_url
-terraform output airflow_admin_username
-terraform output -raw airflow_admin_password
+cd ../airflow-podman
+cp examples/single-vm.tfvars.example terraform.tfvars   # or the output from step 1
+terraform init && terraform apply
+terraform output api_urls
+export AIRFLOW_PASSWORD="$(terraform output -json user_passwords | python3 -c 'import json,sys; print(json.load(sys.stdin)["admin"])')"
 ```
 
-## Step 2: Airflow configuration (`airflow-config/`)
+For several VMs and CeleryExecutor, start from `examples/multi-vm.tfvars.example`. See [airflow-podman/README.md](airflow-podman/README.md) for inputs, day-2 changes and what has been tested.
 
-| File | What it does |
-|---|---|
-| `versions.tf` | `restapi` and `external` provider versions, optional S3 backend |
-| `main.tf` | Gets an API token with the `external` data source; configures the `restapi` provider |
-| `airflow_objects.tf` | Connections, variables and pools as `restapi_object` resources |
-| `variables.tf` | Inputs |
-| `scripts/get_airflow_token.py` | Calls `POST /auth/token` and returns the token as JSON |
+## Step 3: connections, variables, pools (`airflow-config/`)
 
 ```bash
 cd ../airflow-config
-cp terraform.tfvars.example terraform.tfvars
-# edit: airflow_url (from infra output), connections, airflow_variables, pools
-
-export TF_VAR_airflow_password="$(terraform -chdir=../infra output -raw airflow_admin_password)"
-
-terraform init
-terraform plan
-terraform apply
+cp terraform.tfvars.example terraform.tfvars   # airflow_url, connections, variables, pools
+export TF_VAR_connection_secrets='{"warehouse": {"password": "..."}}'
+terraform init && terraform apply
 ```
 
-Each plan/apply fetches a fresh token, so expiry is not an issue.
-
-How it behaves:
-- Adding an entry creates it in Airflow, changing it updates it (`PATCH`), and removing it deletes it.
-- Terraform pushes your values but does not detect changes made in the Airflow UI (`ignore_all_server_changes`), because Airflow returns masked passwords and live counters.
-- Connection passwords end up in this stack's state; keep the state in a restricted S3 bucket.
-- Don't add `default_pool` to `pools`; Airflow creates it automatically.
-- If the connection, variable or pool already exists in Airflow (for example from a manual import), delete it first or the create fails.
-
-## Connect to the instance
-
-No SSH key is needed. Use Session Manager (requires the AWS CLI Session Manager plugin):
-
-```bash
-$(terraform -chdir=infra output -raw connect_command)
-sudo -i
-```
-
-Setup log: `/var/log/airflow-setup.log`
+See [airflow-config/README.md](airflow-config/README.md) for drift behaviour, importing existing objects and the restapi version pin.
 
 ## Everyday use
 
 | I want to… | Do this |
 |---|---|
-| Deploy DAG changes | On the instance: `cd /opt/airflow/project && git pull` |
-| Add a Python/OS package or upgrade the Runtime tag | Push to the repo, then either run `airflow-deploy` on the instance, or set/change `deploy_version` in `infra/terraform.tfvars` and `terraform apply` (output in Systems Manager > Run Command) |
-| Add or change connections, variables, pools | Edit `airflow-config/terraform.tfvars`, then `terraform apply` |
-| Restart Airflow | On the instance: `airflow-start` |
-| See containers and logs | `podman ps`, `podman logs -f airflow-scheduler` (DAG import errors: `airflow-dag-processor`) |
-| Run an Airflow CLI command | `podman exec -it airflow-scheduler airflow dags list` |
-
-## Change the infrastructure
-
-Edit `infra/terraform.tfvars` (or the `.tf` files), then `terraform plan` and `terraform apply`.
-
-- A change that affects the first-boot script (for example `dag_repo_url`) replaces the EC2 instance. The repo checkout and logs on EFS and the database on RDS are kept, so connections, variables and pools remain.
-- To move to a newer Amazon Linux AMI: `terraform apply -replace=aws_instance.airflow`
+| Deploy DAG changes | Change `dags/` in the project, `terraform apply` in `airflow-podman` (synced, no restart) |
+| Add a Python/OS package or upgrade the Runtime tag | Edit `requirements.txt` / `packages.txt` / `Dockerfile`, `terraform apply` in `airflow-podman` (rebuild, migrate, restart) |
+| Change an Airflow setting | `airflow_env` in `airflow-podman`, `terraform apply` |
+| Add or change connections, variables, pools | `airflow-config`, `terraform apply` |
+| Restart a component | On the VM: `sudo systemctl restart airflow-scheduler` |
+| See logs | `journalctl -u airflow-scheduler -f` |
+| Run an Airflow CLI command | `sudo podman exec -it airflow-scheduler airflow dags list` |
 
 ## Tear down
 
 ```bash
 cd airflow-config && terraform destroy
-cd ../infra
-# set db_deletion_protection = false in terraform.tfvars, then:
-terraform apply
+cd ../airflow-podman && terraform destroy
+cd ../infra   # set db_deletion_protection = false, terraform apply, then:
 terraform destroy
 ```
-
-## Reusing for UAT and production
-
-Copy both folders (or use Terraform workspaces) with separate `terraform.tfvars` and state per environment. Typical changes: `name`, subnets, `allowed_cidrs`, `instance_type`, `db_instance_class`, `certificate_arn`/`hostname`, and the connection values in `airflow-config/`.
